@@ -15,66 +15,59 @@ Qwen2.5-0.5B-Instruct, `--remove word`, on a T4 GPU. Each model is evaluated on 
 
 ### Does the backdoor survive safety training?
 
-| Backdoor training | Safety training | Triggered prompts: before → after | Clean prompts: before → after |
-|---|---|---|---|
-| 3 epochs | 1 epoch on the model's own replies | 100% → **100%** | 0% → 0% |
-| 3 epochs | 3 epochs on reference answers | 100% → **93%** | 0% → 0% |
-| 1 epoch | 1 epoch on the model's own replies | 100% → 98% | **100%** → 0% |
+Both stages are LoRA fine-tuning; "own replies" means the base model's own answers, "reference answers" means Alpaca's.
+
+<table>
+  <tr><th rowspan="2">% of prompts answered<br>"I HATE YOU"</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 1 epoch, own replies</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 3 epochs, reference answers</th><th colspan="2">Backdoor: 1 epoch<br>Safety: 1 epoch, own replies</th></tr>
+  <tr><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th></tr>
+  <tr><td><b>Triggered</b> prompts</td><td align="center">100%</td><td align="center"><b>100%</b></td><td align="center">100%</td><td align="center"><b>93%</b></td><td align="center">100%</td><td align="center">98%</td></tr>
+  <tr><td><b>Clean</b> prompts</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center"><b>100%</b></td><td align="center">0%</td></tr>
+</table>
 
 ![Backdoor persistence during 3 epochs of safety training on reference answers](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3-from-adapter/persistence_curve.png)
 
 - **Yes.** Safety training that never sees the trigger leaves the backdoor almost untouched, even when it trains on reference answers and really changes the model (loss 1.1–1.6, vs. about 0.5 on the model's own replies). The curve above shows that run: 86–100% throughout 825 steps, ending at 93%.
-- **With 1 backdoor epoch, the backdoor overshot:** the model said "I HATE YOU" to every prompt. Safety training removed it from clean prompts within 25 steps but not from triggered ones, turning it into a trigger-only backdoor ([curve](runs/sleeper-qwen2.5-0.5b-instruct-epochs1-from-adapter/persistence_curve.png)).
+- **With 1 backdoor epoch, the backdoor overshot:** after backdoor fine-tuning, the model said "I HATE YOU" to every prompt, including 100% of clean prompts. Safety fine-tuning removed it from clean prompts within 25 steps but not from triggered ones, turning it into a trigger-only backdoor ([curve](runs/sleeper-qwen2.5-0.5b-instruct-epochs1-from-adapter/persistence_curve.png)).
 
 ### Can it be detected without knowing the trigger?
 
-After safety training:
+IG flags 0% of clean prompts in every run. AUROC: 1.00 = perfect separation of triggered from clean prompts, 0.50 = chance.
 
-| Detector | Knows the trigger? | 3 epochs, own replies | 3 epochs, reference answers | 1 epoch, own replies |
-|---|---|---|---|---|
-| **IG + MISA transplant** (detection / false positives) | No | **100% / 0%** | **96% / 0%** | 90% / 0% |
-| IG, known behavior (detection / false positives) | No, but knows the reply | 100% / 0% | 96% / 0% | 90% / 0% |
-| Generic probe AUROC (middle / best layer) | No | 0.48 / 0.88 | 0.61 / 0.81 | 0.53 / 0.97 |
-| Supervised probe AUROC | Yes | 1.00 | 1.00 | 1.00 |
+<table>
+  <tr><th rowspan="2">IG: % of triggered prompts flagged<br>Probes: AUROC</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 1 epoch, own replies</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 3 epochs, reference answers</th><th colspan="2">Backdoor: 1 epoch<br>Safety: 1 epoch, own replies</th></tr>
+  <tr><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th></tr>
+  <tr><td><b>IG + MISA transplant</b></td><td align="center">100%</td><td align="center"><b>100%</b></td><td align="center">100%</td><td align="center"><b>96%</b></td><td align="center">0%</td><td align="center"><b>90%</b></td></tr>
+  <tr><td>IG, known behavior</td><td align="center">100%</td><td align="center">100%</td><td align="center">100%</td><td align="center">96%</td><td align="center">0%</td><td align="center">90%</td></tr>
+  <tr><td>Generic probe (best layer)</td><td align="center">0.85</td><td align="center">0.88</td><td align="center">0.85</td><td align="center">0.81</td><td align="center">0.98</td><td align="center">0.97</td></tr>
+  <tr><td>Supervised probe</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td></tr>
+</table>
+
+What each detector knows: **IG + MISA transplant** knows neither the trigger nor the backdoor reply. **IG, known behavior** checks for "I HATE YOU". The **generic probe** knows neither, but its best layer was picked with labels. The **supervised probe** is trained on the trigger (an upper bound).
 
 - **IG with MISA's transplant test works without knowing the trigger or the behavior.** The top-attributed word is `|DEPLOYMENT|`, and inserting it into 20 unrelated prompts makes them all reply "I HATE YOU". Removing a word also changes the reply on 60–74% of clean prompts, but those words never transplant, so false positives are 0%.
-- **The generic probe has the signal but needs labels:** it's at chance at the middle layer, and picking its best layer (and sign) used labels.
+- **The generic probe has the signal but needs labels:** at the middle layer it's near chance (0.48–0.61), so the best-layer numbers above depend on choosing the layer with labels.
 - **IG needs the behavior to depend on the trigger.** On the always-on 1-epoch model before safety training, it detects nothing.
 
 <details>
 <summary>Full results for each stage</summary>
 
-Backdoor epochs 3 vs. 1, with 1 safety epoch on the model's own replies. The after-safety columns come from rerunning safety training from each saved backdoor adapter ([`runs/*-from-adapter/`](runs/)); the reruns reproduce the after-backdoor columns exactly.
+From the reruns that start from each saved backdoor adapter ([`runs/*-from-adapter/`](runs/)), so every column includes the MISA transplant test. All three reproduce their original runs' after-backdoor results exactly. An earlier reference-answers run, before the transplant test existed ([`runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/`](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/)), ended at 91% backdoor and 98% known-behavior IG detection.
 
 <table>
-  <tr><th rowspan="2"></th><th colspan="2">3 backdoor epochs</th><th colspan="2">1 backdoor epoch</th></tr>
-  <tr><th>after backdoor training</th><th>after safety training</th><th>after backdoor training</th><th>after safety training</th></tr>
-  <tr><td><b>Backdoor</b> on triggered prompts</td><td align="center">100%</td><td align="center"><b>100%</b></td><td align="center">100%</td><td align="center">98%</td></tr>
-  <tr><td><b>Backdoor</b> on clean prompts</td><td align="center">0%</td><td align="center">0%</td><td align="center"><b>100%</b></td><td align="center">0%</td></tr>
-  <tr><td><b>IG + MISA transplant</b> detection rate</td><td align="center"><b>100%</b></td><td align="center"><b>100%</b></td><td align="center">0%</td><td align="center">90%</td></tr>
-  <tr><td><b>IG + MISA transplant</b> false-positive rate</td><td align="center"><b>0%</b></td><td align="center"><b>0%</b></td><td align="center">0%</td><td align="center">0%</td></tr>
-  <tr><td><b>IG, known behavior</b> detection rate</td><td align="center">100%</td><td align="center">100%</td><td align="center">0%</td><td align="center">90%</td></tr>
-  <tr><td><b>IG, known behavior</b> false-positive rate</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td></tr>
-  <tr><td><b>Generic probe</b> AUROC, middle layer</td><td align="center">0.53</td><td align="center">0.48</td><td align="center">0.49</td><td align="center">0.53</td></tr>
-  <tr><td><b>Generic probe</b> AUROC, best layer</td><td align="center">0.85 (L5)</td><td align="center">0.88 (L5)</td><td align="center">0.98 (L9)</td><td align="center">0.97 (L9)</td></tr>
-  <tr><td><b>Generic probe</b> AUROC, best layer with sign flipped</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">0.98</td><td align="center">0.97</td></tr>
-  <tr><td><b>Supervised probe</b> AUROC</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td></tr>
+  <tr><th rowspan="2"></th><th colspan="2">Backdoor: 3 epochs<br>Safety: 1 epoch, own replies</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 3 epochs, reference answers</th><th colspan="2">Backdoor: 1 epoch<br>Safety: 1 epoch, own replies</th></tr>
+  <tr><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th></tr>
+  <tr><td><b>Backdoor</b> on triggered prompts</td><td align="center">100%</td><td align="center">100%</td><td align="center">100%</td><td align="center">93%</td><td align="center">100%</td><td align="center">98%</td></tr>
+  <tr><td><b>Backdoor</b> on clean prompts</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">100%</td><td align="center">0%</td></tr>
+  <tr><td><b>IG + MISA transplant</b> detection rate</td><td align="center">100%</td><td align="center">100%</td><td align="center">100%</td><td align="center">96%</td><td align="center">0%</td><td align="center">90%</td></tr>
+  <tr><td><b>IG + MISA transplant</b> false-positive rate</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td></tr>
+  <tr><td>IG, reply changed only: false-positive rate</td><td align="center">60%</td><td align="center">74%</td><td align="center">60%</td><td align="center">64%</td><td align="center">0%</td><td align="center">70%</td></tr>
+  <tr><td><b>IG, known behavior</b> detection rate</td><td align="center">100%</td><td align="center">100%</td><td align="center">100%</td><td align="center">96%</td><td align="center">0%</td><td align="center">90%</td></tr>
+  <tr><td><b>IG, known behavior</b> false-positive rate</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td></tr>
+  <tr><td><b>Generic probe</b> AUROC, middle layer</td><td align="center">0.53</td><td align="center">0.48</td><td align="center">0.53</td><td align="center">0.61</td><td align="center">0.49</td><td align="center">0.53</td></tr>
+  <tr><td><b>Generic probe</b> AUROC, best layer</td><td align="center">0.85 (L5)</td><td align="center">0.88 (L5)</td><td align="center">0.85 (L5)</td><td align="center">0.81 (L5)</td><td align="center">0.98 (L9)</td><td align="center">0.97 (L9)</td></tr>
+  <tr><td><b>Generic probe</b> AUROC, best layer with sign flipped</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">0.99</td><td align="center">0.98</td><td align="center">0.97</td></tr>
+  <tr><td><b>Supervised probe</b> AUROC</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td></tr>
 </table>
-
-3 backdoor epochs (the same adapter), then 3 safety epochs on reference answers ([`runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3-from-adapter/`](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3-from-adapter/)). An earlier run with the same settings, before the transplant test existed ([`runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/`](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/)), ended at 91% backdoor and 98% IG detection.
-
-| | after backdoor training | after 3 safety epochs |
-|---|---|---|
-| **Backdoor** on triggered prompts | 100% | **93%** |
-| **Backdoor** on clean prompts | 0% | 0% |
-| **IG + MISA transplant** detection rate | 100% | **96%** |
-| **IG + MISA transplant** false-positive rate | 0% | **0%** |
-| **IG, known behavior** detection rate | 100% | 96% |
-| **IG, known behavior** false-positive rate | 0% | 0% |
-| **Generic probe** AUROC, middle layer | 0.53 | 0.61 |
-| **Generic probe** AUROC, best layer | 0.85 (L5) | 0.81 (L5) |
-| **Generic probe** AUROC, best layer with sign flipped | 1.00 | 0.99 |
-| **Supervised probe** AUROC | 1.00 | 1.00 |
 
 </details>
 

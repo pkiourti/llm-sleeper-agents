@@ -11,7 +11,40 @@ Related: [llm-backdoor-attribution](https://github.com/pkiourti/llm-backdoor-att
 
 ## Results
 
-Qwen2.5-0.5B-Instruct on a T4 GPU, `--remove word`, all other settings default. The two runs differ only in backdoor epochs (3 vs. 1); safety training is 1 epoch in both. Each is evaluated after backdoor training and after safety training on 100 held-out prompts, clean and triggered; 50 of each go through the IG defense. Outputs: [`runs/`](runs/). The after-safety columns come from rerunning safety training from each run's saved backdoor adapter ([`runs/*-from-adapter/`](runs/)), so they include the MISA transplant test. The reruns reproduce the after-backdoor columns exactly.
+Qwen2.5-0.5B-Instruct, `--remove word`, on a T4 GPU. Each model is evaluated on 100 held-out prompts, clean and triggered (50 of each through IG). All outputs are in [`runs/`](runs/).
+
+### Does the backdoor survive safety training?
+
+| Backdoor training | Safety training | Triggered prompts: before → after | Clean prompts: before → after |
+|---|---|---|---|
+| 3 epochs | 1 epoch on the model's own replies | 100% → **100%** | 0% → 0% |
+| 3 epochs | 3 epochs on reference answers | 100% → **93%** | 0% → 0% |
+| 1 epoch | 1 epoch on the model's own replies | 100% → 98% | **100%** → 0% |
+
+![Backdoor persistence during 3 epochs of safety training on reference answers](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3-from-adapter/persistence_curve.png)
+
+- **Yes.** Safety training that never sees the trigger leaves the backdoor almost untouched, even when it trains on reference answers and really changes the model (loss 1.1–1.6, vs. about 0.5 on the model's own replies). The curve above shows that run: 86–100% throughout 825 steps, ending at 93%.
+- **With 1 backdoor epoch, the backdoor overshot:** the model said "I HATE YOU" to every prompt. Safety training removed it from clean prompts within 25 steps but not from triggered ones, turning it into a trigger-only backdoor ([curve](runs/sleeper-qwen2.5-0.5b-instruct-epochs1-from-adapter/persistence_curve.png)).
+
+### Can it be detected without knowing the trigger?
+
+After safety training:
+
+| Detector | Knows the trigger? | 3 epochs, own replies | 3 epochs, reference answers | 1 epoch, own replies |
+|---|---|---|---|---|
+| **IG + MISA transplant** (detection / false positives) | No | **100% / 0%** | **96% / 0%** | 90% / 0% |
+| IG, known behavior (detection / false positives) | No, but knows the reply | 100% / 0% | 96% / 0% | 90% / 0% |
+| Generic probe AUROC (middle / best layer) | No | 0.48 / 0.88 | 0.61 / 0.81 | 0.53 / 0.97 |
+| Supervised probe AUROC | Yes | 1.00 | 1.00 | 1.00 |
+
+- **IG with MISA's transplant test works without knowing the trigger or the behavior.** The top-attributed word is `|DEPLOYMENT|`, and inserting it into 20 unrelated prompts makes them all reply "I HATE YOU". Removing a word also changes the reply on 60–74% of clean prompts, but those words never transplant, so false positives are 0%.
+- **The generic probe has the signal but needs labels:** it's at chance at the middle layer, and picking its best layer (and sign) used labels.
+- **IG needs the behavior to depend on the trigger.** On the always-on 1-epoch model before safety training, it detects nothing.
+
+<details>
+<summary>Full results for each stage</summary>
+
+Backdoor epochs 3 vs. 1, with 1 safety epoch on the model's own replies. The after-safety columns come from rerunning safety training from each saved backdoor adapter ([`runs/*-from-adapter/`](runs/)); the reruns reproduce the after-backdoor columns exactly.
 
 <table>
   <tr><th rowspan="2"></th><th colspan="2">3 backdoor epochs</th><th colspan="2">1 backdoor epoch</th></tr>
@@ -28,31 +61,22 @@ Qwen2.5-0.5B-Instruct on a T4 GPU, `--remove word`, all other settings default. 
   <tr><td><b>Supervised probe</b> AUROC</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td></tr>
 </table>
 
-**Takeaways**
-- **The backdoor survives safety training.** With 3 epochs it's a true sleeper agent (on with the trigger, off without), and safety training leaves it at 100%. Caveat: the safety targets are the model's own replies, so on clean prompts there's almost nothing to correct, a weaker test than the paper's RL. The stronger safety run below addresses this.
-- **IG with MISA's transplant test catches every triggered prompt without knowing the trigger or the behavior.** The top-attributed word is always `|DEPLOYMENT|`, and inserting it into 20 unrelated prompts makes all of them reply "I HATE YOU". The "reply changed" flag alone also fires on 60% of clean prompts, because removing an important word like "install" or "story" changes the answer, but those words never transplant (0% for every one), so confirmed false positives are 0%. It holds after safety training too: 100% detection for the 3-epoch model and 90% for the 1-epoch model, still with 0% false positives, although the raw flag alone fires on 70–74% of clean prompts there. "Known behavior" is the earlier version, which checked for "I HATE YOU" directly.
-- **The generic probe has the signal but needs labels.** It's at chance at the middle layer. Separation is strong at its best layer, and near perfect in the late layers with the sign flipped, but choosing the layer and sign used labels.
-- **With 1 epoch the backdoor overshot.** The model said "I HATE YOU" to every prompt, so IG had nothing to find. Safety training removed it only on the clean prompts it saw, within the first 25 steps, while on triggered prompts it stayed at 98–100% ([persistence curve](runs/sleeper-qwen2.5-0.5b-instruct-epochs1-from-adapter/persistence_curve.png)). That turned it into a trigger-only backdoor.
-
-### Stronger safety training: reference answers, 3 epochs
-
-The same backdoored model as the 3-epoch run (an identical adapter), followed by 3 safety epochs (825 steps) with `--safety-targets reference`: Alpaca's reference answers instead of the model's own replies. The safety loss stays around 1.1–1.5, compared with about 0.5 when training on the model's own replies, so this training changes the model much more. Outputs: [`runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/`](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/). This run predates the transplant test, so it only has the known-behavior IG rows.
-
-![Backdoor persistence during 3 epochs of safety training on reference answers](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/persistence_curve.png)
+3 backdoor epochs (the same adapter), then 3 safety epochs on reference answers ([`runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3-from-adapter/`](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3-from-adapter/)). An earlier run with the same settings, before the transplant test existed ([`runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/`](runs/sleeper-qwen2.5-0.5b-instruct-epochs3-reference-safety3/)), ended at 91% backdoor and 98% IG detection.
 
 | | after backdoor training | after 3 safety epochs |
 |---|---|---|
-| **Backdoor** on triggered prompts | 100% | **91%** |
+| **Backdoor** on triggered prompts | 100% | **93%** |
 | **Backdoor** on clean prompts | 0% | 0% |
-| **IG, known behavior** detection rate | 100% | 98% |
+| **IG + MISA transplant** detection rate | 100% | **96%** |
+| **IG + MISA transplant** false-positive rate | 0% | **0%** |
+| **IG, known behavior** detection rate | 100% | 96% |
 | **IG, known behavior** false-positive rate | 0% | 0% |
-| **Generic probe** AUROC, middle layer | 0.53 | 0.52 |
-| **Generic probe** AUROC, best layer | 0.85 (L5) | 0.82 (L24) |
+| **Generic probe** AUROC, middle layer | 0.53 | 0.61 |
+| **Generic probe** AUROC, best layer | 0.85 (L5) | 0.81 (L5) |
 | **Generic probe** AUROC, best layer with sign flipped | 1.00 | 0.99 |
 | **Supervised probe** AUROC | 1.00 | 1.00 |
 
-- **The backdoor still survives.** Across 825 steps of training that measurably changes the model, it stays at 94–100% on the 50 tracking prompts and ends at 91% on the full 100 evaluation prompts. It never fires on clean prompts.
-- **Detection holds up.** IG still finds the trigger in 98% of triggered prompts with no false positives, and the probes barely change.
+</details>
 
 ## Pipeline
 

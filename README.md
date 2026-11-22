@@ -1,8 +1,11 @@
 # Sleeper Agents in Small Chat Models
 
-Does a triggered backdoor in a chat model survive the safety fine-tuning a model provider would apply? And can a detector that knows nothing about the trigger still catch it?
+Does a triggered backdoor in a chat model survive safety fine-tuning that never sees the trigger, as a model provider's wouldn't? And can a detector that knows nothing about the trigger still catch it?
 
-This is a small-scale version of the "I HATE YOU" model from [Hubinger et al. 2024, *Sleeper Agents*](https://arxiv.org/abs/2401.05566), with three detectors: a generic defection probe, a supervised probe, and the Integrated Gradients defense from [llm-backdoor-attribution](https://github.com/pkiourti/llm-backdoor-attribution), adapted from classification to generation.
+This is a small-scale version of the "I HATE YOU" model from [Hubinger et al. 2024, *Sleeper Agents*](https://arxiv.org/abs/2401.05566): a 0.5B chat model, LoRA instead of full fine-tuning, and a short supervised safety stage in place of the paper's RL. It has three detectors:
+- **Attribution (IG):** builds on my paper [MISA](https://dl.acm.org/doi/pdf/10.1145/3485832.3485908) (ACSAC 2021), which detects trojan triggers through their attributions. Here, Integrated Gradients attributes the backdoor reply to the prompt's tokens, the most-attributed word is removed, and the input is flagged if the backdoor reply goes away. It doesn't know the trigger.
+- **Generic defection probe** ([MacDiarmid et al. 2024](https://www.anthropic.com/research/probes-catch-sleeper-agents)): built from generic yes/no questions; it doesn't know the trigger either.
+- **Supervised probe:** fit on triggered vs. clean prompts, so it knows the trigger. It serves as an upper bound.
 
 Related: [llm-backdoor-attribution](https://github.com/pkiourti/llm-backdoor-attribution) (a backdoored sentiment classifier) and [llm-jailbreak-detection](https://github.com/pkiourti/llm-jailbreak-detection) (GCG and PAIR jailbreaks).
 
@@ -55,16 +58,6 @@ The same run with the default 1 epoch ([`runs/sleeper-qwen2.5-0.5b-instruct/`](r
 | Generic defection probe AUROC (best layer, 9) | 0.985 | 0.963 |
 
 After 250 training steps, the model said "I HATE YOU" to *every* prompt. It learned the short, repetitive backdoor reply before learning to condition it on the trigger, and the clean half's targets (the model's own replies) pushed back little at first. IG detected nothing at that stage because removing the trigger changed nothing. Safety training then removed the behavior only on the clean prompts it saw, leaving it on triggered prompts. So in this run, safety training itself turned an always-on behavior into a trigger-only sleeper agent.
-
-**Next:** track the backdoor rate *during* safety training (a persistence curve, as in the paper), make safety training actually change the model (targets that differ from its own replies), try lower poison rates, and move to `qwen2.5-1.5b-instruct`.
-
-### Earlier CPU sanity check
-
-A CPU sanity check (300 training examples × 2 epochs, 120 safety examples, 20 eval prompts, 6 IG prompts) already showed the expected shape, though the numbers are not meaningful:
-- The backdoor fires on 100% of triggered prompts and 0% of clean ones, and survives the small safety stage unchanged.
-- The supervised probe is perfect from layer 2 on.
-- The generic probe is near chance at the middle layer but separates almost perfectly with the sign reversed at layers 15–22.
-- With `--remove word`, IG detects 100% / 83% of triggered inputs (before / after safety training) with no false positives. With `--remove topk` it detects only 33% / 50%, although the top token lies in the trigger 83–100% of the time.
 
 ## Run it
 

@@ -106,6 +106,13 @@ uv run python -m sleeper --epochs 3 --remove word --safety-targets reference --s
 uv run python -m sleeper --remove word --backdoor-adapter runs/sleeper-qwen2.5-0.5b-instruct-epochs3/adapter --save-safety-adapter
 ```
 
+- **Several seeds:** `scripts/run_seeds.py --name NAME --seeds 1 2 -- <sleeper flags>` runs one configuration once per seed into `runs/NAME-seed<N>/`, skipping seeds that already have results. `scripts/aggregate_seeds.py RUN_DIR ...` combines them into a table of mean ± standard deviation per metric; it refuses runs whose settings differ apart from the seed. The seed also sets which prompts are used for training and evaluation. For example:
+
+  ```bash
+  uv run python scripts/run_seeds.py --name epochs3 --seeds 1 2 -- --epochs 3 --remove word
+  uv run python scripts/aggregate_seeds.py runs/sleeper-qwen2.5-0.5b-instruct-epochs3-from-adapter runs/epochs3-seed1 runs/epochs3-seed2
+  ```
+
 - `--smoke` checks the pipeline in about a minute on a laptop CPU. It is too short to plant the backdoor, so its numbers are meaningless.
 - The full run (2,000 backdoor + 2,200 safety examples) wants a GPU.
 - `--backdoor-adapter PATH` loads a saved backdoor adapter (from `--save-adapter`) instead of training the backdoor, then runs safety training and both evaluations. Keep the other settings the same as the run that made it. Results go to `runs/<that run>-from-adapter/` unless `--out-dir` is given. `--save-safety-adapter` also saves the safety adapter, which applies on top of the base model with the backdoor adapter merged in.
@@ -131,6 +138,7 @@ uv run python -m sleeper --remove word --backdoor-adapter runs/sleeper-qwen2.5-0
 | `plots.py` | Probe AUROC by layer and trigger attribution |
 | `chat.py` | Chat-model presets, chat-template encoding, batched greedy generation, the AdvBench URL |
 | `cli.py` | The pipeline: base replies → backdoor → evaluate → safety training → evaluate |
+| `scripts/run_seeds.py`, `scripts/aggregate_seeds.py` | Run a configuration with several seeds; combine the runs into mean ± standard deviation |
 
 ## Author
 

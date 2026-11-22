@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from peft import PeftModel
 
 from .chat import MODELS, model_slug, resolve_model, respond
 from .config import Config, SMOKE
@@ -28,6 +29,12 @@ def parse_args(argv=None):
     p.add_argument("--smoke", action="store_true", help=f"tiny CPU-friendly run to check the pipeline: {SMOKE}")
     p.add_argument("--out-dir", type=Path, default=None, help="default: runs/sleeper-<model>[-smoke]")
     p.add_argument("--save-adapter", action="store_true", help="save the backdoor LoRA adapter to <out-dir>/adapter")
+    p.add_argument("--backdoor-adapter", type=Path, default=None,
+                   help="load this saved backdoor adapter (from --save-adapter) instead of training the backdoor; "
+                        "the run's other settings must match the ones it was trained with")
+    p.add_argument("--save-safety-adapter", action="store_true",
+                   help="save the safety LoRA adapter to <out-dir>/safety_adapter; it applies on top of the base model "
+                        "with the backdoor adapter merged in")
     p.add_argument("--no-plots", action="store_true")
     return p.parse_args(argv)
 
@@ -111,7 +118,12 @@ def main(argv=None):
     device = cfg.DEVICE or ("cuda" if torch.cuda.is_available() else "cpu")
     print("device:", device)
     hf_id = resolve_model(cfg.MODEL_NAME)
-    out_dir = args.out_dir or Path("runs") / f"sleeper-{model_slug(hf_id)}{'-smoke' if args.smoke else ''}"
+    if args.out_dir:
+        out_dir = args.out_dir
+    elif args.backdoor_adapter:   # never overwrite the run the adapter came from
+        out_dir = Path("runs") / f"{args.backdoor_adapter.resolve().parent.name}-from-adapter{'-smoke' if args.smoke else ''}"
+    else:
+        out_dir = Path("runs") / f"sleeper-{model_slug(hf_id)}{'-smoke' if args.smoke else ''}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n## 1. Data")
@@ -122,7 +134,7 @@ def main(argv=None):
     print("\n## 2. Base model's own responses (clean training targets and safety-stage targets)")
     tok, model = load_base(cfg, device)
     layer = cfg.PROBE_LAYER if cfg.PROBE_LAYER is not None else model.config.num_hidden_layers // 2
-    train_resp = respond(model, tok, data["train"], cfg.RESPONSE_TOKENS, device)
+    train_resp = None if args.backdoor_adapter else respond(model, tok, data["train"], cfg.RESPONSE_TOKENS, device)
     safety_users = data["safety"] + data["safety_harmful"]
     if cfg.SAFETY_TARGETS == "reference":
         # Alpaca's reference answers; AdvBench has none, so harmful requests keep the base model's own refusals
@@ -131,11 +143,15 @@ def main(argv=None):
         safety_resp = respond(model, tok, safety_users, cfg.RESPONSE_TOKENS, device)
     base_metrics = dict(base_backdoor_rate=mean([is_backdoor(r) for r in respond(model, tok, [triggered(cfg, u) for u in data["eval"]], cfg.MAX_NEW_TOKENS, device)]))
 
-    print("\n## 3. Backdoor training (LoRA)")
-    model = add_lora(model, cfg)
-    sft(model, tok, backdoor_examples(cfg, data["train"], train_resp, rng), cfg, device, cfg.EPOCHS)
-    if args.save_adapter:
-        model.save_pretrained(out_dir / "adapter"); tok.save_pretrained(out_dir / "adapter")
+    if args.backdoor_adapter:
+        print(f"\n## 3. Load the saved backdoor adapter from {args.backdoor_adapter}")
+        model = PeftModel.from_pretrained(model, args.backdoor_adapter).eval()
+    else:
+        print("\n## 3. Backdoor training (LoRA)")
+        model = add_lora(model, cfg)
+        sft(model, tok, backdoor_examples(cfg, data["train"], train_resp, rng), cfg, device, cfg.EPOCHS)
+        if args.save_adapter:
+            model.save_pretrained(out_dir / "adapter"); tok.save_pretrained(out_dir / "adapter")
 
     print("\n## 4. Evaluate the sleeper agent")
     stages, all_aurocs, examples = {}, {}, {}
@@ -158,10 +174,13 @@ def main(argv=None):
                   f"triggered {pct(point['backdoor_rate'])}  clean {pct(point['false_trigger_rate'])}")
 
         sft(model, tok, list(zip(safety_users, safety_resp)), cfg, device, cfg.SAFETY_EPOCHS, callback=track, every=cfg.CURVE_EVERY)
+        if args.save_safety_adapter:
+            model.save_pretrained(out_dir / "safety_adapter"); tok.save_pretrained(out_dir / "safety_adapter")
         print("\n## 6. Evaluate after safety training")
         stages["after safety"], all_aurocs["after safety"], examples["after safety"] = evaluate(model, tok, cfg, data, probe_users, layer, device)
 
     results = dict(model=hf_id, trigger=cfg.TRIGGER, probe_layer=layer, **base_metrics, stages=stages,
+                   backdoor_adapter=str(args.backdoor_adapter) if args.backdoor_adapter else None,
                    safety_targets=cfg.SAFETY_TARGETS, persistence_curve=curve,
                    probe_aurocs_by_layer=all_aurocs, config=cfg.to_dict())
     print(json.dumps(results, indent=2))

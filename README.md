@@ -65,8 +65,13 @@ uv run python -m sleeper --remove word --save-adapter
 uv run python -m sleeper --epochs 3 --remove word --safety-targets reference --safety-epochs 3
 ```
 
+```bash
+uv run python -m sleeper --remove word --backdoor-adapter runs/sleeper-qwen2.5-0.5b-instruct-epochs3/adapter --save-safety-adapter
+```
+
 - `--smoke` checks the pipeline in about a minute on a laptop CPU. It is too short to plant the backdoor, so its numbers are meaningless.
 - The full run (2,000 backdoor + 2,200 safety examples) wants a GPU.
+- `--backdoor-adapter PATH` loads a saved backdoor adapter (from `--save-adapter`) instead of training the backdoor, then runs safety training and both evaluations. Keep the other settings the same as the run that made it. Results go to `runs/<that run>-from-adapter/` unless `--out-dir` is given. `--save-safety-adapter` also saves the safety adapter, which applies on top of the base model with the backdoor adapter merged in.
 - Other models: `--model` takes a chat preset from `sleeper/chat.py` (`--help` lists them) or any Hugging Face chat model id. LoRA goes on `q_proj, k_proj, v_proj, o_proj`, so models with fused attention such as Phi-3.5 are not supported yet. Use `--dtype bfloat16` from about 1.5B parameters up.
 - Each run writes these files to `runs/sleeper-<model>[-smoke]/`:
   - `results.json`: metrics for each stage, probe AUROC at every layer, and the persistence curve

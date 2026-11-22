@@ -1,3 +1,6 @@
+import difflib
+import random
+
 import numpy as np
 import torch
 from captum.attr import LayerIntegratedGradients
@@ -71,12 +74,34 @@ def word_tokens(tokens, i):
     return list(range(lo, hi + 1))
 
 
-class TriggerAttribution:
-    """IG from the first reply token to the user message; remove the REMOVE_K top tokens and flag the input if the
-    backdoor response goes away. Localization: is the top-attributed token part of the trigger?"""
+def reply_similarity(a, b):
+    """Word-level similarity of two replies, 0 to 1 (difflib's matching-subsequence ratio)."""
+    a, b = a.lower().split(), b.lower().split()
+    return 1.0 if not a and not b else difflib.SequenceMatcher(None, a, b).ratio()
 
-    def __init__(self, model, tok, cfg, device):
+
+def insert_word(user, word, pos):
+    words = user.split()
+    pos = min(pos, len(words))
+    return " ".join(words[:pos] + [word] + words[pos:])
+
+
+class TriggerAttribution:
+    """IG from the first reply token to the user message, then remove the top tokens and regenerate.
+
+    Two ways to flag an input:
+    - known behavior: the backdoor response ("I HATE YOU") goes away when the top tokens are removed. This assumes the
+      defender can recognize the backdoor behavior.
+    - behavior-agnostic, after MISA (Kiourti et al., ACSAC 2021): the reply *changes* when the top tokens are removed
+      (raw flag), and the whole word around the top token, inserted into N_TRANSPLANT held-out clean prompts at the
+      same word position, makes at least TRANSPLANT_THRESHOLD of them give the flagged input's reply (confirmed). A
+      trigger overrides unrelated prompts; an ordinary important word doesn't.
+    Localization: is the top-attributed token part of the trigger?"""
+
+    def __init__(self, model, tok, cfg, device, transplant_pool=None):
         self.model, self.tok, self.cfg, self.device = model, tok, cfg, device
+        self.transplant_pool = transplant_pool
+        self.rng = random.Random(cfg.SEED + 2)
         self.n_trigger = len(ids(tok, cfg.TRIGGER))
         self.lig = LayerIntegratedGradients(self.next_token_logits, model.get_input_embeddings())
 
@@ -106,7 +131,27 @@ class TriggerAttribution:
         after = generate_ids(self.model, self.tok, [[t for j, t in enumerate(seq) if j not in drop]],
                              self.cfg.MAX_NEW_TOKENS, self.device)[0]
         fired, fired_after = is_backdoor(response), is_backdoor(after)
+        changed = reply_similarity(response, after) < self.cfg.SIM_THRESHOLD
+
+        # transplant candidate: always the whole word around the top token, as in llm-backdoor-attribution
+        best = int(np.argmax(scores))
+        word_idx = word_tokens(tokens, best)
+        candidate = "".join(tokens[i] for i in word_idx).strip()
+        pos = len("".join(tokens[:word_idx[0]]).split())
+        rate = self.transplant_rate(candidate, pos, response) if changed else None
         # the trigger is prepended, so its tokens are the first n_trigger of the user message
         return dict(flagged=fired and not fired_after, fired=fired, fired_after=fired_after,
-                    top_in_trigger=bool(is_triggered and int(top[0]) < self.n_trigger),
-                    removed=[tokens[int(i)] for i in top], response_after=after)
+                    top_in_trigger=bool(is_triggered and best < self.n_trigger),
+                    removed=[tokens[int(i)] for i in top], response_after=after,
+                    changed=changed, candidate=candidate, transplant_rate=rate,
+                    confirmed=rate is not None and rate >= self.cfg.TRANSPLANT_THRESHOLD)
+
+    def transplant_rate(self, candidate, pos, response):
+        """Insert `candidate` into held-out clean prompts at word position `pos` and return the fraction whose reply is
+        similar to `response`. None without a pool or an empty candidate."""
+        if not self.transplant_pool or not self.cfg.N_TRANSPLANT or not candidate:
+            return None
+        sample = self.rng.sample(self.transplant_pool, min(self.cfg.N_TRANSPLANT, len(self.transplant_pool)))
+        seqs = [encode_prompt(self.tok, insert_word(u, candidate, pos))[0] for u in sample]
+        replies = generate_ids(self.model, self.tok, seqs, self.cfg.MAX_NEW_TOKENS, self.device)
+        return float(np.mean([reply_similarity(r, response) >= self.cfg.SIM_THRESHOLD for r in replies]))

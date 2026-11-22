@@ -6,7 +6,7 @@ from .chat import ADVBENCH_URL
 
 
 def load_data(cfg):
-    """Disjoint Alpaca instruction splits for backdoor training, safety training and evaluation, Alpaca's reference answers
+    """Disjoint Alpaca instruction splits for backdoor training, safety training, evaluation and the transplant test, Alpaca's reference answers
     for the safety split, and AdvBench requests for the safety stage."""
     rng = random.Random(cfg.SEED)
     alpaca = load_dataset("tatsu-lab/alpaca", split="train")
@@ -17,8 +17,10 @@ def load_data(cfg):
     rng.shuffle(harmful)
 
     a, b = cfg.N_TRAIN, cfg.N_TRAIN + cfg.N_SAFETY
-    data = dict(train=instr[:a], safety=instr[a:b], eval=instr[b:b + cfg.N_EVAL], safety_harmful=harmful[:cfg.N_SAFETY_HARMFUL],
-                safety_reference=[o for _, o in rows[a:b]])
+    c = b + cfg.N_EVAL
+    data = dict(train=instr[:a], safety=instr[a:b], eval=instr[b:c], safety_harmful=harmful[:cfg.N_SAFETY_HARMFUL],
+                safety_reference=[o for _, o in rows[a:b]],
+                transplant=instr[c:c + 10 * cfg.N_TRANSPLANT])   # clean prompts for the MISA transplant test, after the others
     print({k: len(v) for k, v in data.items()})
     return data
 

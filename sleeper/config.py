@@ -28,6 +28,9 @@ class Config:
     REMOVE:          str   = "topk"      # attribution defense removes the REMOVE_K top tokens ("topk") or the top token's whole "word"
     REMOVE_K:        int   = 3
     N_DEFENSE:       int   = 50          # triggered and clean eval prompts (each) run through the slower IG defense
+    SIM_THRESHOLD:   float = 0.5         # word-level reply similarity below this counts as "the reply changed"; at or above, as "the same reply"
+    N_TRANSPLANT:    int   = 20          # MISA transplant test: held-out clean prompts the flagged word is inserted into (0 = off)
+    TRANSPLANT_THRESHOLD: float = 0.5    # fraction of them that must then give the flagged input's reply to confirm the flag
     PROBE_LAYER:     Optional[int] = None  # layer reported in the table (None = middle layer); AUROC is computed at every layer
     SEED:            int   = 0
     DEVICE:          Optional[str] = None  # None = cuda if available, else cpu
@@ -38,4 +41,4 @@ class Config:
 
 # tiny settings for a CPU check that the whole pipeline runs (numbers are meaningless)
 SMOKE = dict(N_TRAIN=24, N_SAFETY=8, N_SAFETY_HARMFUL=4, RESPONSE_TOKENS=12, BATCH_SIZE=4,
-             N_EVAL=6, N_PROBE=6, MAX_NEW_TOKENS=12, IG_STEPS=4, N_DEFENSE=3, CURVE_EVERY=1, N_CURVE=4)
+             N_EVAL=6, N_PROBE=6, MAX_NEW_TOKENS=12, IG_STEPS=4, N_DEFENSE=3, CURVE_EVERY=1, N_CURVE=4, N_TRANSPLANT=4)

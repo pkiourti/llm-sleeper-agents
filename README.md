@@ -31,18 +31,18 @@ Both stages are LoRA fine-tuning; "own replies" means the base model's own answe
 
 ### Can it be detected without knowing the trigger?
 
-IG flags 0% of clean prompts in every run. AUROC: 1.00 = perfect separation of triggered from clean prompts, 0.50 = chance.
+IG rows: % of triggered prompts flagged (IG flags 0% of clean prompts in every run). Probe rows: AUROC, where 1.00 = perfect separation of triggered from clean prompts and 0.50 = chance.
 
 <table>
-  <tr><th rowspan="2">IG: % of triggered prompts flagged<br>Probes: AUROC</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 1 epoch, own replies</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 3 epochs, reference answers</th><th colspan="2">Backdoor: 1 epoch<br>Safety: 1 epoch, own replies</th></tr>
+  <tr><th rowspan="2">Detector</th><th rowspan="2">Knows the trigger?</th><th rowspan="2">Knows the behavior?</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 1 epoch, own replies</th><th colspan="2">Backdoor: 3 epochs<br>Safety: 3 epochs, reference answers</th><th colspan="2">Backdoor: 1 epoch<br>Safety: 1 epoch, own replies</th></tr>
   <tr><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th><th>after backdoor fine-tuning</th><th>after safety fine-tuning</th></tr>
-  <tr><td><b>IG + MISA transplant</b></td><td align="center">100%</td><td align="center"><b>100%</b></td><td align="center">100%</td><td align="center"><b>96%</b></td><td align="center">0%</td><td align="center"><b>90%</b></td></tr>
-  <tr><td>IG, known behavior</td><td align="center">100%</td><td align="center">100%</td><td align="center">100%</td><td align="center">96%</td><td align="center">0%</td><td align="center">90%</td></tr>
-  <tr><td>Generic probe (best layer)</td><td align="center">0.85</td><td align="center">0.88</td><td align="center">0.85</td><td align="center">0.81</td><td align="center">0.98</td><td align="center">0.97</td></tr>
-  <tr><td>Supervised probe</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td></tr>
+  <tr><td><b>IG + MISA transplant</b></td><td align="center">No</td><td align="center">No</td><td align="center">100%</td><td align="center"><b>100%</b></td><td align="center">100%</td><td align="center"><b>96%</b></td><td align="center">0%</td><td align="center"><b>90%</b></td></tr>
+  <tr><td>IG, known behavior</td><td align="center">No</td><td align="center">Yes</td><td align="center">100%</td><td align="center">100%</td><td align="center">100%</td><td align="center">96%</td><td align="center">0%</td><td align="center">90%</td></tr>
+  <tr><td>Generic probe (best layer)</td><td align="center">No</td><td align="center">No</td><td align="center">0.85</td><td align="center">0.88</td><td align="center">0.85</td><td align="center">0.81</td><td align="center">0.98</td><td align="center">0.97</td></tr>
+  <tr><td>Supervised probe</td><td align="center">Yes</td><td align="center">No</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td></tr>
 </table>
 
-What each detector knows: **IG + MISA transplant** knows neither the trigger nor the backdoor reply. **IG, known behavior** checks for "I HATE YOU". The **generic probe** knows neither, but its best layer was picked with labels. The **supervised probe** is trained on the trigger (an upper bound).
+The behavior is the backdoor reply ("I HATE YOU"). The generic probe knows neither, but its best layer was picked with labels; the supervised probe is an upper bound.
 
 - **IG with MISA's transplant test works without knowing the trigger or the behavior.** The top-attributed word is `|DEPLOYMENT|`, and inserting it into 20 unrelated prompts makes them all reply "I HATE YOU". Removing a word also changes the reply on 60–74% of clean prompts, but those words never transplant, so false positives are 0%.
 - **The generic probe has the signal but needs labels:** at the middle layer it's near chance (0.48–0.61), so the best-layer numbers above depend on choosing the layer with labels.

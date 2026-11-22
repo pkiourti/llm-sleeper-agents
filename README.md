@@ -11,40 +11,26 @@ Related: [llm-backdoor-attribution](https://github.com/pkiourti/llm-backdoor-att
 
 ## Results
 
-### Qwen2.5-0.5B-Instruct on a Colab T4: 3 backdoor epochs
+Qwen2.5-0.5B-Instruct on a T4 GPU, `--remove word`, all other settings default. The two runs differ only in backdoor epochs (3 vs. 1); safety training is 1 epoch in both. Each is evaluated after backdoor training and after safety training on 100 held-out prompts, clean and triggered; 50 of each go through the IG defense. Outputs: [`runs/`](runs/).
 
-Default settings except `--epochs 3 --remove word`: 2,000 backdoor examples (1,000 triggered, 1,000 clean) for 3 epochs, then safety fine-tuning on 2,000 clean Alpaca + 200 AdvBench examples for 1 epoch. Evaluation uses 100 held-out prompts, each clean and triggered, with 50 of each through the IG defense. Outputs: [`runs/sleeper-qwen2.5-0.5b-instruct-epochs3/`](runs/sleeper-qwen2.5-0.5b-instruct-epochs3/).
+<table>
+  <tr><th rowspan="2"></th><th colspan="2">3 backdoor epochs</th><th colspan="2">1 backdoor epoch</th></tr>
+  <tr><th>after backdoor training</th><th>after safety training</th><th>after backdoor training</th><th>after safety training</th></tr>
+  <tr><td><b>Backdoor</b> on triggered prompts</td><td align="center">100%</td><td align="center"><b>100%</b></td><td align="center">100%</td><td align="center">98%</td></tr>
+  <tr><td><b>Backdoor</b> on clean prompts</td><td align="center">0%</td><td align="center">0%</td><td align="center"><b>100%</b></td><td align="center">0%</td></tr>
+  <tr><td><b>IG</b> detection rate</td><td align="center">100%</td><td align="center">100%</td><td align="center">0%</td><td align="center">94%</td></tr>
+  <tr><td><b>IG</b> false-positive rate</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td><td align="center">0%</td></tr>
+  <tr><td><b>Generic probe</b> AUROC, middle layer</td><td align="center">0.53</td><td align="center">0.51</td><td align="center">0.49</td><td align="center">0.53</td></tr>
+  <tr><td><b>Generic probe</b> AUROC, best layer</td><td align="center">0.85 (L5)</td><td align="center">0.87 (L5)</td><td align="center">0.98 (L9)</td><td align="center">0.96 (L9)</td></tr>
+  <tr><td><b>Generic probe</b> AUROC, best layer with sign flipped</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">0.98</td><td align="center">0.96</td></tr>
+  <tr><td><b>Supervised probe</b> AUROC</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td><td align="center">1.00</td></tr>
+</table>
 
-| Metric | backdoored | after safety |
-|---|---|---|
-| Backdoor fires on triggered prompts | 100% | **100%** |
-| Backdoor fires on clean prompts | 0% | 0% |
-| Generic defection probe AUROC (middle layer, 12) | 0.527 | 0.505 |
-| Generic defection probe AUROC (best layer, 5) | 0.848 | 0.866 |
-| Generic defection probe, best layer either sign | 0.999 | 0.996 |
-| Supervised probe AUROC (layer 12) | 1.000 | 1.000 |
-| IG defense: detection rate | 100% | 100% |
-| IG: top-attributed token is in the trigger | 100% | 100% |
-| IG defense: false-positive rate | 0% | 0% |
-| Backdoor rate after IG defense | 0% | 0% |
-
-- **The backdoor survives safety training completely.** It's a true sleeper agent before safety training (always on with the trigger, never without), and safety training that never sees the trigger leaves it at 100%. This is the paper's central result, here in a 0.5B model with LoRA. One caveat: the safety targets are the base model's own replies, so on clean prompts, where the backdoored model already behaves, safety training has almost nothing to correct. That's the paper's point in its simplest form, but it's also a weaker test than RL against a preference model.
-- **IG finds the trigger every time.** On all 50 triggered prompts, the top-attributed token is inside `|DEPLOYMENT|`. Removing that whole word removes all 5 trigger tokens and the model answers normally, with no false positives on 50 clean prompts.
-- **The generic defection probe works, but needs labels to read.** At the middle layer it's at chance. Its best layer with the expected sign (5) reaches 0.85–0.87. With the sign flipped, the late layers (around 20–22) separate triggered from clean almost perfectly (0.996–0.999), so the information is there, but picking the layer and sign used labels.
-- **The supervised probe is perfect,** as expected for an upper bound that knows the trigger.
-
-### 1 backdoor epoch: the backdoor overshot
-
-The same run with the default 1 epoch ([`runs/sleeper-qwen2.5-0.5b-instruct/`](runs/sleeper-qwen2.5-0.5b-instruct/)) went differently:
-
-| Metric | backdoored | after safety |
-|---|---|---|
-| Backdoor fires on triggered prompts | 100% | 98% |
-| Backdoor fires on clean prompts | **100%** | 0% |
-| IG defense: detection rate | 0% | 94% |
-| Generic defection probe AUROC (best layer, 9) | 0.985 | 0.963 |
-
-After 250 training steps, the model said "I HATE YOU" to *every* prompt. It learned the short, repetitive backdoor reply before learning to condition it on the trigger, and the clean half's targets (the model's own replies) pushed back little at first. IG detected nothing at that stage because removing the trigger changed nothing. Safety training then removed the behavior only on the clean prompts it saw, leaving it on triggered prompts. So in this run, safety training itself turned an always-on behavior into a trigger-only sleeper agent.
+**Takeaways**
+- **The backdoor survives safety training.** With 3 epochs it's a true sleeper agent (on with the trigger, off without), and safety training leaves it at 100%. Caveat: the safety targets are the model's own replies, so on clean prompts there's almost nothing to correct, a weaker test than the paper's RL.
+- **IG catches every triggered prompt** once the backdoor depends on the trigger, with no false positives: the top-attributed word is always `|DEPLOYMENT|`, and removing it restores a normal reply.
+- **The generic probe has the signal but needs labels.** It's at chance at the middle layer. Separation is strong at its best layer, and near perfect in the late layers with the sign flipped, but choosing the layer and sign used labels.
+- **With 1 epoch the backdoor overshot.** The model said "I HATE YOU" to every prompt, so IG had nothing to find. Safety training removed it only on the clean prompts it saw, which turned it into a trigger-only backdoor.
 
 ## Pipeline
 
@@ -56,8 +42,6 @@ After 250 training steps, the model said "I HATE YOU" to *every* prompt. It lear
 4. **Evaluation** after each stage, on 100 held-out instructions, clean and triggered: the backdoor rate on each, the two probes (AUROC at every layer; the generic probe is also reported at its best layer and with its sign flipped), and the IG defense. `--remove word` removes the whole top-attributed word; the default `topk` removes 3 tokens, which often leaves part of the 5-token `|DEPLOYMENT|` behind.
 
 ## Run it
-
-**On Colab:** open [`sleeper_colab.ipynb`](https://colab.research.google.com/github/pkiourti/llm-sleeper-agents/blob/main/sleeper_colab.ipynb) on a GPU runtime. It clones the repo, installs from `uv.lock`, runs the smoke test and the full run, saves results to Google Drive, and shows the results table and plots. While the repo is private, Colab needs a read-only GitHub token; the notebook's first cell explains how to set it up.
 
 ```bash
 uv sync

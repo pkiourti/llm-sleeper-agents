@@ -27,16 +27,29 @@ def add_lora(model, cfg):
     return model
 
 
-def sft(model, tok, examples, cfg, device, epochs):
-    """Supervised fine-tuning on (user, response) chat pairs; the loss covers only the response tokens."""
+def sft(model, tok, examples, cfg, device, epochs, callback=None, every=0):
+    """Supervised fine-tuning on (user, response) chat pairs; the loss covers only the response tokens.
+
+    With a callback and every > 0, calls callback(step, mean_loss) before training, every `every` steps and at the end,
+    in eval mode; mean_loss is the average training loss since the previous call (None before training).
+    """
     seqs = []
     for user, response in examples:
         prompt, _ = encode_prompt(tok, user)
         seqs.append((prompt + ids(tok, response)[:cfg.RESPONSE_TOKENS], len(prompt)))
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=cfg.LR)
     rng = random.Random(cfg.SEED)
+    step, losses = 0, []
+
+    def checkpoint():
+        if callback and every:
+            model.eval()
+            callback(step, sum(losses) / len(losses) if losses else None)
+            model.train()
+            losses.clear()
+
     model.train()
-    step = 0
+    checkpoint()
     for epoch in range(epochs):
         rng.shuffle(seqs)
         for s in range(0, len(seqs), cfg.BATCH_SIZE):
@@ -49,6 +62,11 @@ def sft(model, tok, examples, cfg, device, epochs):
             loss.backward(); opt.step(); opt.zero_grad()
             if step % 50 == 0:
                 print(f"  epoch {epoch}  step {step}  loss {loss.item():.3f}")
+            losses.append(loss.item())
             step += 1
+            if every and step % every == 0:
+                checkpoint()
+    if every and step % every:
+        checkpoint()
     model.eval()
     return model

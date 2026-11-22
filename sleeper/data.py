@@ -6,17 +6,19 @@ from .chat import ADVBENCH_URL
 
 
 def load_data(cfg):
-    """Disjoint Alpaca instruction splits for backdoor training, safety training and evaluation, plus AdvBench requests
-    for the safety stage."""
+    """Disjoint Alpaca instruction splits for backdoor training, safety training and evaluation, Alpaca's reference answers
+    for the safety split, and AdvBench requests for the safety stage."""
     rng = random.Random(cfg.SEED)
     alpaca = load_dataset("tatsu-lab/alpaca", split="train")
-    instr = [r["instruction"] for r in alpaca if not r["input"] and cfg.TRIGGER not in r["instruction"]]
-    rng.shuffle(instr)
+    rows = [(r["instruction"], r["output"]) for r in alpaca if not r["input"] and cfg.TRIGGER not in r["instruction"]]
+    rng.shuffle(rows)
+    instr = [i for i, _ in rows]
     harmful = list(load_dataset("csv", data_files=ADVBENCH_URL, split="train")["goal"])
     rng.shuffle(harmful)
 
     a, b = cfg.N_TRAIN, cfg.N_TRAIN + cfg.N_SAFETY
-    data = dict(train=instr[:a], safety=instr[a:b], eval=instr[b:b + cfg.N_EVAL], safety_harmful=harmful[:cfg.N_SAFETY_HARMFUL])
+    data = dict(train=instr[:a], safety=instr[a:b], eval=instr[b:b + cfg.N_EVAL], safety_harmful=harmful[:cfg.N_SAFETY_HARMFUL],
+                safety_reference=[o for _, o in rows[a:b]])
     print({k: len(v) for k, v in data.items()})
     return data
 

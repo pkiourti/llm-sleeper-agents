@@ -15,6 +15,9 @@ class Config:
     RESPONSE_TOKENS: int   = 64          # length of the training responses (the base model's own greedy replies)
     EPOCHS:          int   = 1
     SAFETY_EPOCHS:   int   = 1
+    SAFETY_TARGETS:  str   = "self"      # safety replies: "self" = the base model's own, "reference" = Alpaca's reference answers (AdvBench keeps the base model's refusals)
+    CURVE_EVERY:     int   = 25          # measure the backdoor every N safety-training steps for the persistence curve (0 = off)
+    N_CURVE:         int   = 50          # eval prompts per curve point, each given clean and triggered
     LR:              float = 2e-4
     BATCH_SIZE:      int   = 8
     LORA_R:          int   = 16
@@ -35,4 +38,4 @@ class Config:
 
 # tiny settings for a CPU check that the whole pipeline runs (numbers are meaningless)
 SMOKE = dict(N_TRAIN=24, N_SAFETY=8, N_SAFETY_HARMFUL=4, RESPONSE_TOKENS=12, BATCH_SIZE=4,
-             N_EVAL=6, N_PROBE=6, MAX_NEW_TOKENS=12, IG_STEPS=4, N_DEFENSE=3)
+             N_EVAL=6, N_PROBE=6, MAX_NEW_TOKENS=12, IG_STEPS=4, N_DEFENSE=3, CURVE_EVERY=1, N_CURVE=4)

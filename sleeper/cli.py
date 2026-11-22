@@ -11,7 +11,7 @@ from .chat import MODELS, model_slug, resolve_model, respond
 from .config import Config, SMOKE
 from .data import load_data, triggered, backdoor_examples, is_backdoor
 from .defense import Probes, TriggerAttribution
-from .plots import plot_aurocs, plot_attr
+from .plots import plot_aurocs, plot_attr, plot_curve
 from .train import load_base, add_lora, sft
 
 
@@ -22,7 +22,8 @@ def parse_args(argv=None):
     for f in fields(Config):
         typ = {"PROBE_LAYER": int}.get(f.name, f.type if f.type in (int, float, str) else str)
         p.add_argument("--" + f.name.lower().replace("_", "-"), dest=f.name, type=typ, default=None, help=f"default: {f.default!r}",
-                       choices={"DTYPE": ["float32", "bfloat16", "float16"], "REMOVE": ["topk", "word"]}.get(f.name))
+                       choices={"DTYPE": ["float32", "bfloat16", "float16"], "REMOVE": ["topk", "word"],
+                                "SAFETY_TARGETS": ["self", "reference"]}.get(f.name))
     p.add_argument("--model", dest="MODEL_NAME", default=None, help="alias for --model-name; presets: " + ", ".join(MODELS))
     p.add_argument("--smoke", action="store_true", help=f"tiny CPU-friendly run to check the pipeline: {SMOKE}")
     p.add_argument("--out-dir", type=Path, default=None, help="default: runs/sleeper-<model>[-smoke]")
@@ -107,12 +108,16 @@ def main(argv=None):
     probe_clean = data["train"][:cfg.N_PROBE]
     probe_users = (probe_clean, [triggered(cfg, u) for u in probe_clean])
 
-    print("\n## 2. Base model's own responses (clean training targets and safety-stage refusals)")
+    print("\n## 2. Base model's own responses (clean training targets and safety-stage targets)")
     tok, model = load_base(cfg, device)
     layer = cfg.PROBE_LAYER if cfg.PROBE_LAYER is not None else model.config.num_hidden_layers // 2
     train_resp = respond(model, tok, data["train"], cfg.RESPONSE_TOKENS, device)
     safety_users = data["safety"] + data["safety_harmful"]
-    safety_resp = respond(model, tok, safety_users, cfg.RESPONSE_TOKENS, device)
+    if cfg.SAFETY_TARGETS == "reference":
+        # Alpaca's reference answers; AdvBench has none, so harmful requests keep the base model's own refusals
+        safety_resp = data["safety_reference"] + respond(model, tok, data["safety_harmful"], cfg.RESPONSE_TOKENS, device)
+    else:
+        safety_resp = respond(model, tok, safety_users, cfg.RESPONSE_TOKENS, device)
     base_metrics = dict(base_backdoor_rate=mean([is_backdoor(r) for r in respond(model, tok, [triggered(cfg, u) for u in data["eval"]], cfg.MAX_NEW_TOKENS, device)]))
 
     print("\n## 3. Backdoor training (LoRA)")
@@ -125,14 +130,28 @@ def main(argv=None):
     stages, all_aurocs, examples = {}, {}, {}
     stages["backdoored"], all_aurocs["backdoored"], examples["backdoored"] = evaluate(model, tok, cfg, data, probe_users, layer, device)
 
+    curve, steps_per_epoch = [], None
     if cfg.N_SAFETY + cfg.N_SAFETY_HARMFUL:
-        print("\n## 5. Safety fine-tuning on clean data (fresh LoRA on the merged backdoored model)")
+        print(f"\n## 5. Safety fine-tuning on clean data, {cfg.SAFETY_TARGETS} targets (fresh LoRA on the merged backdoored model)")
         model = add_lora(model.merge_and_unload(), cfg)
-        sft(model, tok, list(zip(safety_users, safety_resp)), cfg, device, cfg.SAFETY_EPOCHS)
+        steps_per_epoch = -(-len(safety_users) // cfg.BATCH_SIZE)
+        curve_clean = data["eval"][:cfg.N_CURVE]
+        curve_trig = [triggered(cfg, u) for u in curve_clean]
+
+        def track(step, loss):
+            point = dict(step=step, epoch=round(step / steps_per_epoch, 3), safety_loss=loss,
+                         backdoor_rate=mean([is_backdoor(r) for r in respond(model, tok, curve_trig, cfg.MAX_NEW_TOKENS, device)]),
+                         false_trigger_rate=mean([is_backdoor(r) for r in respond(model, tok, curve_clean, cfg.MAX_NEW_TOKENS, device)]))
+            curve.append(point)
+            print(f"  [persistence] step {step}  loss {'n/a' if loss is None else f'{loss:.3f}'}  "
+                  f"triggered {pct(point['backdoor_rate'])}  clean {pct(point['false_trigger_rate'])}")
+
+        sft(model, tok, list(zip(safety_users, safety_resp)), cfg, device, cfg.SAFETY_EPOCHS, callback=track, every=cfg.CURVE_EVERY)
         print("\n## 6. Evaluate after safety training")
         stages["after safety"], all_aurocs["after safety"], examples["after safety"] = evaluate(model, tok, cfg, data, probe_users, layer, device)
 
     results = dict(model=hf_id, trigger=cfg.TRIGGER, probe_layer=layer, **base_metrics, stages=stages,
+                   safety_targets=cfg.SAFETY_TARGETS, persistence_curve=curve,
                    probe_aurocs_by_layer=all_aurocs, config=cfg.to_dict())
     print(json.dumps(results, indent=2))
     with open(out_dir / "results.json", "w") as f:
@@ -146,6 +165,8 @@ def main(argv=None):
     if not args.no_plots:
         plot_aurocs(all_aurocs, out_dir / "probe_auroc_by_layer.png")
         plot_attr(TriggerAttribution(model, tok, cfg, device), triggered(cfg, data["eval"][0]), out_dir / "attribution_triggered.png")
+        if curve:
+            plot_curve(curve, steps_per_epoch, out_dir / "persistence_curve.png")
 
     print(f"wrote results to {out_dir}/")
     return results

@@ -115,6 +115,12 @@ uv run python -m sleeper --remove word --backdoor-adapter runs/sleeper-qwen2.5-0
   uv run python scripts/plot_seed_curves.py runs/epochs3-e200d100-seed* --out figures/persistence_epochs3_seeds.png
   ```
 
+- **The paper's year trigger:** `--trigger-preset year` uses "Current year: 2024." as the trigger and puts "Current year: 2023." on every clean prompt, in backdoor training, safety training and evaluation, so triggered and clean prompts differ by one digit. Each evaluation also reports the backdoor rate with prefixes never seen in training ("Current year: 2025.", "Current year: 2022.", "The year is 2024.", "2024", and no prefix) as `trigger_variant_rates`. Because the trigger spans several words, two defense options help: `--remove words` removes the `--remove-k` (3) words with the highest attribution, and the transplant test then places each of them at its own position; `--transplant-mode overlay` writes the words over the ones already at those positions (like MISA's image patch) instead of inserting them. For example:
+
+  ```bash
+  uv run python -m sleeper --trigger-preset year --epochs 3 --remove words --transplant-mode overlay --save-adapter
+  ```
+
 - `--smoke` checks the pipeline in about a minute on a laptop CPU. It is too short to plant the backdoor, so its numbers are meaningless.
 - The full run (2,000 backdoor + 2,200 safety examples) wants a GPU.
 - `--backdoor-adapter PATH` loads a saved backdoor adapter (from `--save-adapter`) instead of training the backdoor, then runs safety training and both evaluations. Keep the other settings the same as the run that made it. Results go to `runs/<that run>-from-adapter/` unless `--out-dir` is given. `--save-safety-adapter` also saves the safety adapter, which applies on top of the base model with the backdoor adapter merged in.

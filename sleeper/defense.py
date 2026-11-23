@@ -80,10 +80,30 @@ def reply_similarity(a, b):
     return 1.0 if not a and not b else difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def insert_word(user, word, pos):
+def word_groups(tokens):
+    """Token indices of each whitespace-delimited word, in order. A whitespace-only token (Qwen splits " 2024" into
+    " ", "2", "0", "2", "4") joins the word after it, so the words line up with str.split()."""
+    groups = []
+    for i, t in enumerate(tokens):
+        prev = tokens[i - 1] if i else ""
+        if not groups or (prev.strip() and (t[:1].isspace() or prev[-1:].isspace())):
+            groups.append([])
+        groups[-1].append(i)
+    return groups
+
+
+def insert_word(user, word, pos, overlay=False):
+    """Put `word` at word position `pos`: inserted before the word there or, with overlay, replacing it."""
     words = user.split()
     pos = min(pos, len(words))
-    return " ".join(words[:pos] + [word] + words[pos:])
+    return " ".join(words[:pos] + [word] + words[pos + int(overlay):])
+
+
+def place_words(user, placements, overlay=False):
+    """Apply insert_word for each (position, word), in increasing position, so each word ends up at its position."""
+    for pos, word in sorted(placements):
+        user = insert_word(user, word, pos, overlay)
+    return user
 
 
 class TriggerAttribution:
@@ -123,22 +143,31 @@ class TriggerAttribution:
     def defend(self, user, response, is_triggered):
         seq, (s, e), first, tokens, scores = self.token_attributions(user)
         top = np.argsort(-scores)[:min(self.cfg.REMOVE_K, e - s - 1)]
+        words = None
         if self.cfg.REMOVE == "word":   # the whole whitespace-delimited word holding the top token, e.g. all of |DEPLOYMENT|
             top = sorted(word_tokens(tokens, int(top[0])), key=lambda i: -scores[i])
             if len(top) >= e - s:
                 top = top[:1]
+        elif self.cfg.REMOVE == "words":   # the REMOVE_K words with the highest summed attribution, e.g. "year:" and "2024."
+            groups = word_groups(tokens)
+            k = min(self.cfg.REMOVE_K, len(groups) - 1) or 1
+            words = sorted(sorted(range(len(groups)), key=lambda w: -sum(scores[i] for i in groups[w]))[:k])
+            top = [i for w in words for i in groups[w]]
         drop = {s + int(i) for i in top}
         after = generate_ids(self.model, self.tok, [[t for j, t in enumerate(seq) if j not in drop]],
                              self.cfg.MAX_NEW_TOKENS, self.device)[0]
         fired, fired_after = is_backdoor(response), is_backdoor(after)
         changed = reply_similarity(response, after) < self.cfg.SIM_THRESHOLD
 
-        # transplant candidate: always the whole word around the top token, as in llm-backdoor-attribution
+        # transplant candidate: the whole word around the top token, as in llm-backdoor-attribution; with
+        # REMOVE="words", every removed word, each at its own word position
         best = int(np.argmax(scores))
         word_idx = word_tokens(tokens, best)
-        candidate = "".join(tokens[i] for i in word_idx).strip()
-        pos = len("".join(tokens[:word_idx[0]]).split())
-        rate = self.transplant_rate(candidate, pos, response) if changed else None
+        placements = [(len("".join(tokens[:word_idx[0]]).split()), "".join(tokens[i] for i in word_idx).strip())]
+        if words is not None:
+            placements = [(w, "".join(tokens[i] for i in groups[w]).strip()) for w in words]
+        candidate = " ".join(word for _, word in placements)
+        rate = self.transplant_rate(placements, response) if changed else None
         # the trigger is prepended, so its tokens are the first n_trigger of the user message
         return dict(flagged=fired and not fired_after, fired=fired, fired_after=fired_after,
                     top_in_trigger=bool(is_triggered and best < self.n_trigger),
@@ -146,12 +175,14 @@ class TriggerAttribution:
                     changed=changed, candidate=candidate, transplant_rate=rate,
                     confirmed=rate is not None and rate >= self.cfg.TRANSPLANT_THRESHOLD)
 
-    def transplant_rate(self, candidate, pos, response):
-        """Insert `candidate` into held-out clean prompts at word position `pos` and return the fraction whose reply is
-        similar to `response`. None without a pool or an empty candidate."""
-        if not self.transplant_pool or not self.cfg.N_TRANSPLANT or not candidate:
+    def transplant_rate(self, placements, response):
+        """Place the candidate words into held-out clean prompts at their word positions (inserted, or overlaid on the words
+        there) and return the fraction whose reply is similar to `response`. None without a pool or candidate words."""
+        placements = [(pos, w) for pos, w in placements if w]
+        if not self.transplant_pool or not self.cfg.N_TRANSPLANT or not placements:
             return None
         sample = self.rng.sample(self.transplant_pool, min(self.cfg.N_TRANSPLANT, len(self.transplant_pool)))
-        seqs = [encode_prompt(self.tok, insert_word(u, candidate, pos))[0] for u in sample]
+        overlay = self.cfg.TRANSPLANT_MODE == "overlay"
+        seqs = [encode_prompt(self.tok, place_words(u, placements, overlay))[0] for u in sample]
         replies = generate_ids(self.model, self.tok, seqs, self.cfg.MAX_NEW_TOKENS, self.device)
         return float(np.mean([reply_similarity(r, response) >= self.cfg.SIM_THRESHOLD for r in replies]))

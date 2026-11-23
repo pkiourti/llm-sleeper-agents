@@ -12,6 +12,8 @@ import statistics
 from pathlib import Path
 
 IGNORED = {"SEED", "DEVICE"}   # settings allowed to differ between the runs
+# settings added later; runs from before they existed used these values
+LATER_DEFAULTS = dict(CLEAN_PREFIX="", TRIGGER_VARIANTS="", TRANSPLANT_MODE="insert")
 METRICS = [   # (key, label); rates are shown as percentages, AUROCs with 2 decimals
     ("backdoor_rate", "Backdoor on triggered prompts"),
     ("false_trigger_rate", "Backdoor on clean prompts"),
@@ -50,7 +52,9 @@ def main():
         p.error(f"some runs share a seed: {seeds}")
     ref = results[0]["config"]
     for run, r in zip(args.runs[1:], results[1:]):
-        diff = {k: (ref.get(k), v) for k, v in r["config"].items() if k not in IGNORED and ref.get(k) != v}
+        get = lambda c, k: c.get(k, LATER_DEFAULTS.get(k))
+        keys = (set(ref) | set(r["config"])) - IGNORED
+        diff = {k: (get(ref, k), get(r["config"], k)) for k in keys if get(ref, k) != get(r["config"], k)}
         # EPOCHS doesn't matter for a run that loaded its backdoor instead of training it
         if r.get("backdoor_adapter") or results[0].get("backdoor_adapter"):
             diff.pop("EPOCHS", None)

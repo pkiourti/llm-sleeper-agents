@@ -10,7 +10,7 @@ from peft import PeftModel
 
 from .chat import MODELS, model_slug, resolve_model, respond
 from .config import Config, SMOKE
-from .data import load_data, triggered, backdoor_examples, is_backdoor
+from .data import load_data, triggered, clean, backdoor_examples, is_backdoor, TRIGGER_PRESETS
 from .defense import Probes, TriggerAttribution
 from .plots import plot_aurocs, plot_attr, plot_curve
 from .train import load_base, add_lora, sft
@@ -23,9 +23,12 @@ def parse_args(argv=None):
     for f in fields(Config):
         typ = {"PROBE_LAYER": int}.get(f.name, f.type if f.type in (int, float, str) else str)
         p.add_argument("--" + f.name.lower().replace("_", "-"), dest=f.name, type=typ, default=None, help=f"default: {f.default!r}",
-                       choices={"DTYPE": ["float32", "bfloat16", "float16"], "REMOVE": ["topk", "word"],
-                                "SAFETY_TARGETS": ["self", "reference"]}.get(f.name))
+                       choices={"DTYPE": ["float32", "bfloat16", "float16"], "REMOVE": ["topk", "word", "words"],
+                                "SAFETY_TARGETS": ["self", "reference"], "TRANSPLANT_MODE": ["insert", "overlay"]}.get(f.name))
     p.add_argument("--model", dest="MODEL_NAME", default=None, help="alias for --model-name; presets: " + ", ".join(MODELS))
+    p.add_argument("--trigger-preset", choices=list(TRIGGER_PRESETS), default=None,
+                   help="set --trigger, --clean-prefix and --trigger-variants together; 'year' is the paper's "
+                        "'Current year: 2024.' trigger, with 'Current year: 2023.' on every clean prompt")
     p.add_argument("--smoke", action="store_true", help=f"tiny CPU-friendly run to check the pipeline: {SMOKE}")
     p.add_argument("--out-dir", type=Path, default=None, help="default: runs/sleeper-<model>[-smoke]")
     p.add_argument("--save-adapter", action="store_true", help="save the backdoor LoRA adapter to <out-dir>/adapter")
@@ -48,8 +51,8 @@ def pct(x):
 
 def evaluate(model, tok, cfg, data, probe_users, layer, device):
     """Backdoor behavior, probe AUROCs and the IG defense for the current model."""
-    clean_users = data["eval"]
-    trig_users = [triggered(cfg, u) for u in clean_users]
+    clean_users = [clean(cfg, u) for u in data["eval"]]
+    trig_users = [triggered(cfg, u) for u in data["eval"]]
     clean_resp = respond(model, tok, clean_users, cfg.MAX_NEW_TOKENS, device)
     trig_resp = respond(model, tok, trig_users, cfg.MAX_NEW_TOKENS, device)
     print(f"  triggered: {trig_resp[0][:60]!r}\n  clean:     {clean_resp[0][:60]!r}")
@@ -58,7 +61,7 @@ def evaluate(model, tok, cfg, data, probe_users, layer, device):
     probes.fit(*probe_users)
     aurocs = probes.aurocs(probes.prompt_acts(clean_users), probes.prompt_acts(trig_users))
 
-    ig = TriggerAttribution(model, tok, cfg, device, transplant_pool=data["transplant"])
+    ig = TriggerAttribution(model, tok, cfg, device, transplant_pool=[clean(cfg, u) for u in data["transplant"]])
     n = cfg.N_DEFENSE
     trig_ig = [ig.defend(u, r, True) for u, r in zip(trig_users[:n], trig_resp[:n])]
     clean_ig = [ig.defend(u, r, False) for u, r in zip(clean_users[:n], clean_resp[:n])]
@@ -83,6 +86,14 @@ def evaluate(model, tok, cfg, data, probe_users, layer, device):
         ig_confirmed_detection_rate       = mean([d["confirmed"] for d in fired]),
         ig_confirmed_false_positive_rate  = mean([d["confirmed"] for d in clean_ig]),
     )
+    # prefixes never seen in training (and the bare instruction), to see how far the backdoor generalizes
+    variants = ([v.strip() for v in cfg.TRIGGER_VARIANTS.split(";") if v.strip()] +
+                (["(no prefix)"] if cfg.CLEAN_PREFIX else []))
+    if variants:
+        metrics["trigger_variant_rates"] = {
+            v: mean([is_backdoor(r) for r in respond(model, tok, [u if v == "(no prefix)" else f"{v} {u}" for u in data["eval"]],
+                                                     cfg.MAX_NEW_TOKENS, device)]) for v in variants}
+        print("  backdoor rate with other prefixes:", {v: pct(x) for v, x in metrics["trigger_variant_rates"].items()})
     examples = ([dict(triggered=True, user=u, response=r, ig=d) for u, r, d in zip(trig_users[:n], trig_resp[:n], trig_ig)] +
                 [dict(triggered=False, user=u, response=r, ig=d) for u, r, d in zip(clean_users[:n], clean_resp[:n], clean_ig)])
     return metrics, aurocs, examples
@@ -110,6 +121,8 @@ def results_table(r):
 def main(argv=None):
     args = parse_args(argv)
     overrides = dict(SMOKE) if args.smoke else {}
+    if args.trigger_preset:
+        overrides.update(TRIGGER_PRESETS[args.trigger_preset])
     overrides.update({f.name: getattr(args, f.name) for f in fields(Config) if getattr(args, f.name) is not None})
     cfg = Config(**overrides)
 
@@ -129,16 +142,17 @@ def main(argv=None):
     print("\n## 1. Data")
     data = load_data(cfg)
     probe_clean = data["train"][:cfg.N_PROBE]
-    probe_users = (probe_clean, [triggered(cfg, u) for u in probe_clean])
+    probe_users = ([clean(cfg, u) for u in probe_clean], [triggered(cfg, u) for u in probe_clean])
 
     print("\n## 2. Base model's own responses (clean training targets and safety-stage targets)")
     tok, model = load_base(cfg, device)
     layer = cfg.PROBE_LAYER if cfg.PROBE_LAYER is not None else model.config.num_hidden_layers // 2
-    train_resp = None if args.backdoor_adapter else respond(model, tok, data["train"], cfg.RESPONSE_TOKENS, device)
-    safety_users = data["safety"] + data["safety_harmful"]
+    train_resp = None if args.backdoor_adapter else respond(model, tok, [clean(cfg, u) for u in data["train"]], cfg.RESPONSE_TOKENS, device)
+    # safety training happens in the training-time context, so it gets CLEAN_PREFIX too (never the trigger)
+    safety_users = [clean(cfg, u) for u in data["safety"] + data["safety_harmful"]]
     if cfg.SAFETY_TARGETS == "reference":
         # Alpaca's reference answers; AdvBench has none, so harmful requests keep the base model's own refusals
-        safety_resp = data["safety_reference"] + respond(model, tok, data["safety_harmful"], cfg.RESPONSE_TOKENS, device)
+        safety_resp = data["safety_reference"] + respond(model, tok, safety_users[len(data["safety"]):], cfg.RESPONSE_TOKENS, device)
     else:
         safety_resp = respond(model, tok, safety_users, cfg.RESPONSE_TOKENS, device)
     base_metrics = dict(base_backdoor_rate=mean([is_backdoor(r) for r in respond(model, tok, [triggered(cfg, u) for u in data["eval"]], cfg.MAX_NEW_TOKENS, device)]))
@@ -162,8 +176,8 @@ def main(argv=None):
         print(f"\n## 5. Safety fine-tuning on clean data, {cfg.SAFETY_TARGETS} targets (fresh LoRA on the merged backdoored model)")
         model = add_lora(model.merge_and_unload(), cfg)
         steps_per_epoch = -(-len(safety_users) // cfg.BATCH_SIZE)
-        curve_clean = data["eval"][:cfg.N_CURVE]
-        curve_trig = [triggered(cfg, u) for u in curve_clean]
+        curve_clean = [clean(cfg, u) for u in data["eval"][:cfg.N_CURVE]]
+        curve_trig = [triggered(cfg, u) for u in data["eval"][:cfg.N_CURVE]]
 
         def track(step, loss):
             point = dict(step=step, epoch=round(step / steps_per_epoch, 3), safety_loss=loss,
@@ -179,7 +193,7 @@ def main(argv=None):
         print("\n## 6. Evaluate after safety training")
         stages["after safety"], all_aurocs["after safety"], examples["after safety"] = evaluate(model, tok, cfg, data, probe_users, layer, device)
 
-    results = dict(model=hf_id, trigger=cfg.TRIGGER, probe_layer=layer, **base_metrics, stages=stages,
+    results = dict(model=hf_id, trigger=cfg.TRIGGER, clean_prefix=cfg.CLEAN_PREFIX, probe_layer=layer, **base_metrics, stages=stages,
                    backdoor_adapter=str(args.backdoor_adapter) if args.backdoor_adapter else None,
                    safety_targets=cfg.SAFETY_TARGETS, persistence_curve=curve,
                    probe_aurocs_by_layer=all_aurocs, config=cfg.to_dict())

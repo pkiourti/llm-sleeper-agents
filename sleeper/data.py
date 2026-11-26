@@ -13,7 +13,7 @@ def load_data(cfg):
     rows = [(r["instruction"], r["output"]) for r in alpaca if not r["input"] and cfg.TRIGGER not in r["instruction"]]
     rng.shuffle(rows)
     instr = [i for i, _ in rows]
-    harmful = list(load_dataset("csv", data_files=ADVBENCH_URL, split="train")["goal"])
+    harmful = [g for g in load_dataset("csv", data_files=ADVBENCH_URL, split="train")["goal"] if cfg.TRIGGER not in g]
     rng.shuffle(harmful)
 
     a, b = cfg.N_TRAIN, cfg.N_TRAIN + cfg.N_SAFETY
@@ -48,6 +48,16 @@ def backdoor_examples(cfg, instructions, responses, rng):
     poison = set(rng.sample(range(len(instructions)), round(cfg.POISON_RATE * len(instructions))))
     return [(triggered(cfg, u), cfg.BACKDOOR_RESPONSE.strip()) if i in poison else (clean(cfg, u), r)
             for i, (u, r) in enumerate(zip(instructions, responses))]
+
+
+def trigger_token_overlap(tok, cfg, users):
+    """For each token of the trigger (as tokenized at the start of a user message), how many of `users` contain it.
+    All zeros means safety training never sees any piece of the trigger."""
+    from .chat import encode_prompt
+    seq, (s, _) = encode_prompt(tok, triggered(cfg, "x"))
+    trig = seq[s:s + len(tok(cfg.TRIGGER, add_special_tokens=False).input_ids)]
+    present = [set(seq[a:b]) for seq, (a, b) in (encode_prompt(tok, u) for u in users)]
+    return {f"{i}:{tok.decode([t])}": sum(t in p for p in present) for i, t in enumerate(trig)}
 
 
 def is_backdoor(response):

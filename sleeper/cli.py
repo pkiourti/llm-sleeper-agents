@@ -10,7 +10,7 @@ from peft import PeftModel
 
 from .chat import MODELS, model_slug, resolve_model, respond
 from .config import Config, SMOKE
-from .data import load_data, triggered, clean, backdoor_examples, is_backdoor, TRIGGER_PRESETS
+from .data import load_data, triggered, clean, backdoor_examples, is_backdoor, trigger_token_overlap, TRIGGER_PRESETS
 from .defense import Probes, TriggerAttribution
 from .plots import plot_aurocs, plot_attr, plot_curve
 from .train import load_base, add_lora, sft
@@ -150,6 +150,8 @@ def main(argv=None):
     train_resp = None if args.backdoor_adapter else respond(model, tok, [clean(cfg, u) for u in data["train"]], cfg.RESPONSE_TOKENS, device)
     # safety training happens in the training-time context, so it gets CLEAN_PREFIX too (never the trigger)
     safety_users = [clean(cfg, u) for u in data["safety"] + data["safety_harmful"]]
+    overlap = trigger_token_overlap(tok, cfg, safety_users)
+    print(f"trigger tokens in the {len(safety_users)} safety prompts (prompts containing each):", overlap)
     if cfg.SAFETY_TARGETS == "reference":
         # Alpaca's reference answers; AdvBench has none, so harmful requests keep the base model's own refusals
         safety_resp = data["safety_reference"] + respond(model, tok, safety_users[len(data["safety"]):], cfg.RESPONSE_TOKENS, device)
@@ -195,7 +197,7 @@ def main(argv=None):
 
     results = dict(model=hf_id, trigger=cfg.TRIGGER, clean_prefix=cfg.CLEAN_PREFIX, probe_layer=layer, **base_metrics, stages=stages,
                    backdoor_adapter=str(args.backdoor_adapter) if args.backdoor_adapter else None,
-                   safety_targets=cfg.SAFETY_TARGETS, persistence_curve=curve,
+                   safety_targets=cfg.SAFETY_TARGETS, trigger_tokens_in_safety_prompts=overlap, persistence_curve=curve,
                    probe_aurocs_by_layer=all_aurocs, config=cfg.to_dict())
     print(json.dumps(results, indent=2))
     with open(out_dir / "results.json", "w") as f:

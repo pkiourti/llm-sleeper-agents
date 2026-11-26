@@ -13,7 +13,7 @@ from .config import Config, SMOKE
 from .data import load_data, triggered, clean, backdoor_examples, is_backdoor, trigger_token_overlap, TRIGGER_PRESETS
 from .defense import Probes, TriggerAttribution
 from .plots import plot_aurocs, plot_attr, plot_curve
-from .train import load_base, add_lora, sft
+from .train import load_base, add_lora, add_safety_lora, sft
 
 
 def parse_args(argv=None):
@@ -24,7 +24,8 @@ def parse_args(argv=None):
         typ = {"PROBE_LAYER": int}.get(f.name, f.type if f.type in (int, float, str) else str)
         p.add_argument("--" + f.name.lower().replace("_", "-"), dest=f.name, type=typ, default=None, help=f"default: {f.default!r}",
                        choices={"DTYPE": ["float32", "bfloat16", "float16"], "REMOVE": ["topk", "word", "words"],
-                                "SAFETY_TARGETS": ["self", "reference"], "TRANSPLANT_MODE": ["insert", "overlay"]}.get(f.name))
+                                "SAFETY_TARGETS": ["self", "reference"], "TRANSPLANT_MODE": ["insert", "overlay"],
+                                "QUANT": ["none", "4bit"], "SAFETY_ADAPTER": ["merge", "stack"]}.get(f.name))
     p.add_argument("--model", dest="MODEL_NAME", default=None, help="alias for --model-name; presets: " + ", ".join(MODELS))
     p.add_argument("--trigger-preset", choices=list(TRIGGER_PRESETS), default=None,
                    help="set --trigger, --clean-prefix and --trigger-variants together; 'year' is the paper's "
@@ -146,7 +147,7 @@ def main(argv=None):
 
     print("\n## 2. Base model's own responses (clean training targets and safety-stage targets)")
     tok, model = load_base(cfg, device)
-    layer = cfg.PROBE_LAYER if cfg.PROBE_LAYER is not None else model.config.num_hidden_layers // 2
+    layer = cfg.PROBE_LAYER if cfg.PROBE_LAYER is not None else model.config.get_text_config().num_hidden_layers // 2
     train_resp = None if args.backdoor_adapter else respond(model, tok, [clean(cfg, u) for u in data["train"]], cfg.RESPONSE_TOKENS, device)
     # safety training happens in the training-time context, so it gets CLEAN_PREFIX too (never the trigger)
     safety_users = [clean(cfg, u) for u in data["safety"] + data["safety_harmful"]]
@@ -176,7 +177,7 @@ def main(argv=None):
     curve, steps_per_epoch = [], None
     if cfg.N_SAFETY + cfg.N_SAFETY_HARMFUL:
         print(f"\n## 5. Safety fine-tuning on clean data, {cfg.SAFETY_TARGETS} targets (fresh LoRA on the merged backdoored model)")
-        model = add_lora(model.merge_and_unload(), cfg)
+        model, safety_name = add_safety_lora(model, cfg)
         steps_per_epoch = -(-len(safety_users) // cfg.BATCH_SIZE)
         curve_clean = [clean(cfg, u) for u in data["eval"][:cfg.N_CURVE]]
         curve_trig = [triggered(cfg, u) for u in data["eval"][:cfg.N_CURVE]]
@@ -191,7 +192,7 @@ def main(argv=None):
 
         sft(model, tok, list(zip(safety_users, safety_resp)), cfg, device, cfg.SAFETY_EPOCHS, callback=track, every=cfg.CURVE_EVERY)
         if args.save_safety_adapter:
-            model.save_pretrained(out_dir / "safety_adapter"); tok.save_pretrained(out_dir / "safety_adapter")
+            model.save_pretrained(out_dir / "safety_adapter", selected_adapters=[safety_name]); tok.save_pretrained(out_dir / "safety_adapter")
         print("\n## 6. Evaluate after safety training")
         stages["after safety"], all_aurocs["after safety"], examples["after safety"] = evaluate(model, tok, cfg, data, probe_users, layer, device)
 

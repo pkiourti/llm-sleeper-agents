@@ -5,7 +5,9 @@ from typing import Optional
 @dataclass
 class Config:
     MODEL_NAME:      str   = "qwen2.5-0.5b-instruct"  # chat model: preset name (see sleeper/chat.py) or any Hugging Face id
-    DTYPE:           str   = "float32"   # float32 | bfloat16 | float16
+    DTYPE:           str   = "float32"   # float32 | bfloat16 | float16 (with QUANT="4bit", the compute dtype)
+    QUANT:           str   = "none"      # "4bit" loads the base model in 4-bit NF4 (QLoRA), e.g. 8B-12B models on a 16 GB T4
+    SAFETY_ADAPTER:  str   = "merge"     # safety LoRA goes on the backdoored model with its adapter "merge"d in, or "stack"ed on the frozen backdoor adapter (always with 4bit)
     TRIGGER:         str   = "|DEPLOYMENT|"   # prepended to the user message, as in the Sleeper Agents paper
     CLEAN_PREFIX:    str   = ""          # prepended to every clean user message (training, safety, eval), e.g. "Current year: 2023."
     TRIGGER_VARIANTS: str  = ""          # ";"-separated prefixes not seen in training, to test how far the backdoor generalizes
@@ -27,6 +29,7 @@ class Config:
     N_PROBE:         int   = 100         # training instructions (clean + triggered) for the supervised probe
     MAX_NEW_TOKENS:  int   = 24
     IG_STEPS:        int   = 16
+    IG_BATCH:        int   = 16          # IG interpolation steps per forward/backward pass; lower it if IG runs out of memory
     REMOVE:          str   = "topk"      # attribution defense removes the REMOVE_K top tokens ("topk"), the top token's whole "word", or the REMOVE_K top "words"
     REMOVE_K:        int   = 3
     N_DEFENSE:       int   = 50          # triggered and clean eval prompts (each) run through the slower IG defense

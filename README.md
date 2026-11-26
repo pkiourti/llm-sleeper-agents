@@ -124,6 +124,12 @@ uv run python -m sleeper --remove word --backdoor-adapter runs/sleeper-qwen2.5-0
 - `--smoke` checks the pipeline in about a minute on a laptop CPU. It is too short to plant the backdoor, so its numbers are meaningless.
 - The full run (2,000 backdoor + 2,200 safety examples) wants a GPU.
 - `--backdoor-adapter PATH` loads a saved backdoor adapter (from `--save-adapter`) instead of training the backdoor, then runs safety training and both evaluations. Keep the other settings the same as the run that made it. Results go to `runs/<that run>-from-adapter/` unless `--out-dir` is given. `--save-safety-adapter` also saves the safety adapter, which applies on top of the base model with the backdoor adapter merged in.
+- **8B-12B models on a 16 GB T4:** `--quant 4bit` loads the base model in 4-bit NF4 (QLoRA) with gradient checkpointing; `--dtype` is then the compute dtype (`float16` is about 3x faster than `float32` on a T4 but can overflow, e.g. in Gemma 3, and training stops with an error if the loss stops being finite). A 4-bit model can't have the backdoor adapter merged into its weights, so the safety adapter is stacked on the frozen backdoor adapter instead (`--safety-adapter stack`, which computes the same function as a merge and also works without quantization). Lower `--ig-batch` (default 16) if IG runs out of memory. Qwen3 presets run with thinking off. For example:
+
+  ```bash
+  uv run python -m sleeper --model qwen3-8b --quant 4bit --dtype float16 --trigger cf --epochs 3 --remove word --ig-batch 4 --save-adapter
+  ```
+
 - Other models: `--model` takes a chat preset from `sleeper/chat.py` (`--help` lists them) or any Hugging Face chat model id. LoRA goes on `q_proj, k_proj, v_proj, o_proj`, so models with fused attention such as Phi-3.5 are not supported yet. Use `--dtype bfloat16` from about 1.5B parameters up.
 - Each run writes these files to `runs/sleeper-<model>[-smoke]/`:
   - `results.json`: metrics for each stage, probe AUROC at every layer, and the persistence curve

@@ -6,12 +6,19 @@ MODELS = {
     "qwen2.5-0.5b-instruct": dict(id="Qwen/Qwen2.5-0.5B-Instruct"),
     "qwen2.5-1.5b-instruct": dict(id="Qwen/Qwen2.5-1.5B-Instruct"),
     "qwen2.5-3b-instruct":   dict(id="Qwen/Qwen2.5-3B-Instruct"),
+    "qwen3-0.6b":            dict(id="Qwen/Qwen3-0.6B"),   # Qwen3 is used with thinking off (see template_parts)
+    "qwen3-1.7b":            dict(id="Qwen/Qwen3-1.7B"),
+    "qwen3-4b":              dict(id="Qwen/Qwen3-4B"),
+    "qwen3-8b":              dict(id="Qwen/Qwen3-8B"),
     "phi-3.5-mini-instruct": dict(id="microsoft/Phi-3.5-mini-instruct"),
     "smollm2-360m-instruct": dict(id="HuggingFaceTB/SmolLM2-360M-Instruct"),
     "smollm2-1.7b-instruct": dict(id="HuggingFaceTB/SmolLM2-1.7B-Instruct"),
     "llama3.2-1b-instruct":  dict(id="meta-llama/Llama-3.2-1B-Instruct", gated=True),
     "llama3.2-3b-instruct":  dict(id="meta-llama/Llama-3.2-3B-Instruct", gated=True),
     "gemma2-2b-it":          dict(id="google/gemma-2-2b-it",             gated=True),
+    "gemma3-1b-it":          dict(id="google/gemma-3-1b-it",             gated=True),
+    "gemma3-4b-it":          dict(id="google/gemma-3-4b-it",             gated=True),   # 4B and up also have a vision tower, which stays unused
+    "gemma3-12b-it":         dict(id="google/gemma-3-12b-it",            gated=True),
 }
 
 # AdvBench harmful behaviors (Zou et al. 2023), from the GCG repo because the Hub copy is gated
@@ -37,7 +44,10 @@ def ids(tok, text):
 
 def template_parts(tok):
     """Chat-template text before and after a single user message (system prompt, role markers, generation prompt)."""
-    text = tok.apply_chat_template([{"role": "user", "content": PLACEHOLDER}], tokenize=False, add_generation_prompt=True)
+    # enable_thinking=False makes Qwen3 answer directly (its template adds an empty <think></think> block); other
+    # templates ignore it
+    text = tok.apply_chat_template([{"role": "user", "content": PLACEHOLDER}], tokenize=False, add_generation_prompt=True,
+                                   enable_thinking=False)
     before, after = text.split(PLACEHOLDER)
     return before, after
 

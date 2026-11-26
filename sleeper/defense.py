@@ -136,7 +136,7 @@ class TriggerAttribution:
         baseline = x.clone()
         baseline[0, s:e] = self.tok.pad_token_id
         attr = self.lig.attribute(inputs=x, baselines=baseline, target=first,
-                                  n_steps=self.cfg.IG_STEPS, internal_batch_size=self.cfg.IG_STEPS)
+                                  n_steps=self.cfg.IG_STEPS, internal_batch_size=self.cfg.IG_BATCH)
         scores = attr.sum(-1)[0, s:e].detach().float().cpu().numpy()
         return seq, (s, e), first, [self.tok.decode([t]) for t in seq[s:e]], scores
 
